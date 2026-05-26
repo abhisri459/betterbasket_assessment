@@ -1,53 +1,124 @@
 # BetterBasket Engineering Assessment
 
-## Approach
+This project matches Store A grocery products to the closest Store B products and
+produces the required submission file:
 
-The solution matches products from Store A to the closest product in Store B using a hybrid pipeline:
-
-1. UPC based exact matching when UPCs are available.
-2. Text normalization over product name, brand, category, and size.
-3. Size/unit extraction from product names and size fields.
-4. Similarity based candidate generation using fuzzy token matching.
-5. GPT assisted judging for ambiguous candidates where rule based confidence is moderate.
-
-## Why hybrid matching?
-
-UPC matching alone is insufficient because scraped grocery data often has missing UPCs. Also, private label and fresh products may be equivalent from a customer perspective even when UPCs differ. Therefore, the solution combines deterministic matching with semantic validation.
-
-## GPT usage
-
-The provided GPT deployment is used only for ambiguous candidate pairs. The model receives structured product attributes for Product A and Product B and returns a JSON decision containing:
-
-- is_match
-- confidence
-- reason
-
-This avoids unnecessary LLM calls while still using the model for cases requiring semantic grocery judgment.
-
-## Output
-
-The main output is:
-
+```text
 outputs/matches.csv
+```
 
 with columns:
 
+```csv
 item_id_A,item_id_B
+```
 
-A metadata file is also generated for debugging:
+## Approach
 
-outputs/matches_with_metadata.csv
+The matcher uses a hybrid pipeline:
 
-## How to run
+1. Normalize product names, brands, category hierarchy, tags, and size fields.
+2. Parse structured assessment fields such as `item_info`, `sizing_comp`,
+   `brand_raw`, `is_private_label`, and `is_organic`.
+3. Generate Store B candidates with TF-IDF cosine similarity over normalized
+   product text.
+4. Re-rank candidates with fuzzy name/category similarity, brand compatibility,
+   size compatibility, and organic/private-label signals.
+5. Optionally use the provided OpenAI deployment to adjudicate ambiguous
+   candidate sets only.
 
+## OpenAI Usage
+
+The OpenAI deployment is intentionally not used for every product pair. Instead,
+it is used as a quality-control layer for borderline candidates after deterministic
+candidate generation.
+
+This keeps the solution scalable and uses the model where semantic grocery
+judgment matters most: private-label equivalence, missing brands, fresh items,
+and close candidate ties.
+
+LLM decisions are cached in:
+
+```text
+outputs/llm_cache.jsonl
+```
+
+so repeated runs do not waste API calls.
+
+## Setup
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
+```
 
-python src/match_products.py
+Or run with `uv`:
+
+```bash
+uv run --with pandas --with rapidfuzz --with scikit-learn --with tqdm --with pyyaml --with openai python src/match_products.py --help
+```
+
+Place the provided CSV files in:
+
+```text
+data/products_A.csv
+data/products_B.csv
+```
+
+Place the provided OpenAI credentials file at:
+
+```text
+openai_creds.yaml
+```
+
+The raw data, generated outputs, and credentials are ignored by Git.
+
+## Run
+
+Generate the baseline submission:
+
+```bash
+uv run --with pandas --with rapidfuzz --with scikit-learn --with tqdm --with pyyaml --with openai \
+python src/match_products.py \
+  --limit 4000 \
+  --top-k 30 \
+  --min-score 0.62 \
+  --output outputs/matches.csv \
+  --metadata-output outputs/matches_with_metadata.csv
+```
+
+Run with limited GPT adjudication:
+
+```bash
+uv run --with pandas --with rapidfuzz --with scikit-learn --with tqdm --with pyyaml --with openai \
+python src/match_products.py \
+  --limit 4000 \
+  --top-k 30 \
+  --min-score 0.68 \
+  --use-llm \
+  --llm-min-score 0.50 \
+  --llm-max-score 0.68 \
+  --max-llm-calls 50 \
+  --llm-sleep 5 \
+  --output outputs/matches.csv \
+  --metadata-output outputs/matches_with_metadata.csv
+```
+
+## Outputs
+
+- `outputs/matches.csv`: required two-column submission file.
+- `outputs/matches_with_metadata.csv`: debug file with method, score, product
+  names, and LLM metadata.
+- `outputs/llm_cache.jsonl`: cached OpenAI adjudication decisions.
 
 ## Assumptions
 
-- Same UPC means exact match.
-- Products with very similar name, size, category, and brand are accepted directly.
-- Private label products can match across brands if they represent the same product to a customer.
-- Size, flavor, form, and organic status are important matching signals.
-- GPT is used for borderline cases, not as the primary search mechanism.
+- Products with highly similar names, sizes, brands, and categories can be
+  accepted directly.
+- Private-label items can match across retailers when product type, size, form,
+  and key attributes are equivalent.
+- Flavor, form, organic status, dietary variant, and package size are important
+  matching signals.
+- GPT is used only for ambiguous candidate adjudication, not as the primary
+  search mechanism.
