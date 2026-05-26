@@ -1,5 +1,7 @@
 import argparse
+import json
 import os
+import time
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -9,6 +11,27 @@ from tqdm import tqdm
 
 from llm_judge import judge_candidates, load_openai_client
 from utils import prepare_products, row_to_product
+
+
+def load_llm_cache(path):
+    cache = {}
+    if not path or not os.path.exists(path):
+        return cache
+    with open(path, "r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            cache[record["item_id_A"]] = record["decision"]
+    return cache
+
+
+def append_llm_cache(path, item_id, decision):
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as file:
+        file.write(json.dumps({"item_id_A": item_id, "decision": decision}) + "\n")
 
 
 def size_score(a, b):
@@ -81,9 +104,14 @@ def build_matches(
     llm_min_score=0.50,
     llm_max_score=0.62,
     llm_candidates=3,
+    max_llm_calls=0,
+    llm_sleep=2.0,
+    llm_cache_path="outputs/llm_cache.jsonl",
 ):
     distances, indices = generate_candidates(A, B, top_k)
     results = []
+    llm_calls = 0
+    llm_cache = load_llm_cache(llm_cache_path) if client else {}
 
     for a_pos, a in tqdm(list(A.iterrows()), desc="Matching products"):
         ranked = []
@@ -108,7 +136,11 @@ def build_matches(
                     "product_b": row_to_product(best_b)["name"],
                 }
             )
-        elif client and llm_min_score <= best_score < llm_max_score:
+        elif (
+            client
+            and llm_min_score <= best_score < llm_max_score
+            and (max_llm_calls <= 0 or llm_calls < max_llm_calls)
+        ):
             candidate_products = []
             candidate_by_id = {}
             for candidate_score, _, candidate_row in ranked[:llm_candidates]:
@@ -117,7 +149,15 @@ def build_matches(
                 candidate_products.append(product)
                 candidate_by_id[str(product["item_id"])] = (candidate_score, candidate_row)
 
-            decision = judge_candidates(client, model, row_to_product(a), candidate_products)
+            if a["item_id"] in llm_cache:
+                decision = llm_cache[a["item_id"]]
+            else:
+                decision = judge_candidates(client, model, row_to_product(a), candidate_products)
+                append_llm_cache(llm_cache_path, a["item_id"], decision)
+                llm_calls += 1
+                if llm_sleep > 0:
+                    time.sleep(llm_sleep)
+
             selected_id = decision.get("selected_item_id_B")
             confidence = float(decision.get("confidence") or 0)
             if selected_id and str(selected_id) in candidate_by_id and confidence >= 0.70:
@@ -156,6 +196,9 @@ def main():
     parser.add_argument("--llm-min-score", type=float, default=0.50)
     parser.add_argument("--llm-max-score", type=float, default=0.62)
     parser.add_argument("--llm-candidates", type=int, default=3)
+    parser.add_argument("--max-llm-calls", type=int, default=100)
+    parser.add_argument("--llm-sleep", type=float, default=2.0)
+    parser.add_argument("--llm-cache", default="outputs/llm_cache.jsonl")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sample-a", type=int, default=None)
     parser.add_argument("--sample-b", type=int, default=None)
@@ -185,6 +228,9 @@ def main():
         llm_min_score=args.llm_min_score,
         llm_max_score=args.llm_max_score,
         llm_candidates=args.llm_candidates,
+        max_llm_calls=args.max_llm_calls,
+        llm_sleep=args.llm_sleep,
+        llm_cache_path=args.llm_cache,
     )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     if matches.empty:

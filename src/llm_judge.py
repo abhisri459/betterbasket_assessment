@@ -1,7 +1,9 @@
 import json
+import time
 
 import yaml
 from openai import OpenAI
+from openai import RateLimitError
 
 
 def load_openai_client(creds_path="openai_creds.yaml"):
@@ -25,7 +27,7 @@ def parse_json_response(text):
         return {"selected_item_id_B": None, "confidence": 0.0, "reason": "Could not parse model response"}
 
 
-def judge_candidates(client, model, product_a, candidates):
+def judge_candidates(client, model, product_a, candidates, retries=3, retry_delay=15):
     candidate_lines = []
     for index, candidate in enumerate(candidates, start=1):
         candidate_lines.append(
@@ -74,12 +76,22 @@ Store B candidates:
 {chr(10).join(candidate_lines)}
 """
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You are a precise grocery product matching adjudicator."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-    )
-    return parse_json_response(response.choices[0].message.content)
+    for attempt in range(retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a precise grocery product matching adjudicator."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+            )
+            return parse_json_response(response.choices[0].message.content)
+        except RateLimitError:
+            if attempt == retries:
+                return {
+                    "selected_item_id_B": None,
+                    "confidence": 0.0,
+                    "reason": "Skipped after repeated OpenAI rate limit responses",
+                }
+            time.sleep(retry_delay * (attempt + 1))
