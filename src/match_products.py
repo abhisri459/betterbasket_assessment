@@ -112,6 +112,15 @@ def build_matches(
     results = []
     llm_calls = 0
     llm_cache = load_llm_cache(llm_cache_path) if client else {}
+    stats = {
+        "similarity_matches": 0,
+        "llm_candidates_seen": 0,
+        "llm_calls_made": 0,
+        "llm_cache_hits": 0,
+        "llm_matches": 0,
+        "llm_rejections": 0,
+        "below_threshold": 0,
+    }
 
     for a_pos, a in tqdm(list(A.iterrows()), desc="Matching products"):
         ranked = []
@@ -124,6 +133,7 @@ def build_matches(
         best_score, semantic_score, best_b = ranked[0]
 
         if best_score >= min_score:
+            stats["similarity_matches"] += 1
             results.append(
                 {
                     "item_id_A": a["item_id"],
@@ -141,6 +151,7 @@ def build_matches(
             and llm_min_score <= best_score < llm_max_score
             and (max_llm_calls <= 0 or llm_calls < max_llm_calls)
         ):
+            stats["llm_candidates_seen"] += 1
             candidate_products = []
             candidate_by_id = {}
             for candidate_score, _, candidate_row in ranked[:llm_candidates]:
@@ -151,16 +162,19 @@ def build_matches(
 
             if a["item_id"] in llm_cache:
                 decision = llm_cache[a["item_id"]]
+                stats["llm_cache_hits"] += 1
             else:
                 decision = judge_candidates(client, model, row_to_product(a), candidate_products)
                 append_llm_cache(llm_cache_path, a["item_id"], decision)
                 llm_calls += 1
+                stats["llm_calls_made"] += 1
                 if llm_sleep > 0:
                     time.sleep(llm_sleep)
 
             selected_id = decision.get("selected_item_id_B")
             confidence = float(decision.get("confidence") or 0)
             if selected_id and str(selected_id) in candidate_by_id and confidence >= 0.70:
+                stats["llm_matches"] += 1
                 selected_score, selected_b = candidate_by_id[str(selected_id)]
                 results.append(
                     {
@@ -176,11 +190,15 @@ def build_matches(
                         "llm_reason": decision.get("reason", ""),
                     }
                 )
+            else:
+                stats["llm_rejections"] += 1
+        else:
+            stats["below_threshold"] += 1
 
         if limit and len(results) >= limit:
             break
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), stats
 
 
 def main():
@@ -217,7 +235,7 @@ def main():
     if args.use_llm:
         client, model = load_openai_client(args.creds_path)
 
-    matches = build_matches(
+    matches, stats = build_matches(
         A,
         B,
         top_k=args.top_k,
@@ -238,6 +256,9 @@ def main():
     matches[["item_id_A", "item_id_B"]].to_csv(args.output, index=False)
     matches.to_csv(args.metadata_output, index=False)
     print(f"Generated {len(matches)} matches")
+    print("Run summary:")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
 
 
 if __name__ == "__main__":
