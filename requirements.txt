@@ -1,0 +1,7 @@
+pandas
+numpy
+rapidfuzz
+scikit-learn
+pyyaml
+openai
+tqdm

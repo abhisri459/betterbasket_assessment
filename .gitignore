@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Provided credentials should stay local.
+openai_creds.yaml
+
+# Large input data and generated outputs are reproducible.
+data/*.csv
+outputs/*.csv
+outputs/*.jsonl
+
