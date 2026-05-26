@@ -7,6 +7,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 
+from llm_judge import judge_candidates, load_openai_client
 from utils import prepare_products, row_to_product
 
 
@@ -69,7 +70,18 @@ def generate_candidates(A, B, top_k):
     return distances, indices
 
 
-def build_matches(A, B, top_k=30, min_score=0.62, limit=None):
+def build_matches(
+    A,
+    B,
+    top_k=30,
+    min_score=0.62,
+    limit=None,
+    client=None,
+    model=None,
+    llm_min_score=0.50,
+    llm_max_score=0.62,
+    llm_candidates=3,
+):
     distances, indices = generate_candidates(A, B, top_k)
     results = []
 
@@ -96,6 +108,34 @@ def build_matches(A, B, top_k=30, min_score=0.62, limit=None):
                     "product_b": row_to_product(best_b)["name"],
                 }
             )
+        elif client and llm_min_score <= best_score < llm_max_score:
+            candidate_products = []
+            candidate_by_id = {}
+            for candidate_score, _, candidate_row in ranked[:llm_candidates]:
+                product = row_to_product(candidate_row)
+                product["candidate_score"] = round(candidate_score, 4)
+                candidate_products.append(product)
+                candidate_by_id[str(product["item_id"])] = (candidate_score, candidate_row)
+
+            decision = judge_candidates(client, model, row_to_product(a), candidate_products)
+            selected_id = decision.get("selected_item_id_B")
+            confidence = float(decision.get("confidence") or 0)
+            if selected_id and str(selected_id) in candidate_by_id and confidence >= 0.70:
+                selected_score, selected_b = candidate_by_id[str(selected_id)]
+                results.append(
+                    {
+                        "item_id_A": a["item_id"],
+                        "item_id_B": selected_b["item_id"],
+                        "method": "llm_adjudicated",
+                        "score": round(selected_score, 4),
+                        "semantic_score": "",
+                        "llm_used": True,
+                        "product_a": row_to_product(a)["name"],
+                        "product_b": row_to_product(selected_b)["name"],
+                        "llm_confidence": confidence,
+                        "llm_reason": decision.get("reason", ""),
+                    }
+                )
 
         if limit and len(results) >= limit:
             break
@@ -111,6 +151,11 @@ def main():
     parser.add_argument("--metadata-output", default="outputs/matches_with_metadata.csv")
     parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument("--min-score", type=float, default=0.62)
+    parser.add_argument("--use-llm", action="store_true")
+    parser.add_argument("--creds-path", default="openai_creds.yaml")
+    parser.add_argument("--llm-min-score", type=float, default=0.50)
+    parser.add_argument("--llm-max-score", type=float, default=0.62)
+    parser.add_argument("--llm-candidates", type=int, default=3)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sample-a", type=int, default=None)
     parser.add_argument("--sample-b", type=int, default=None)
@@ -125,7 +170,22 @@ def main():
         "B",
     ).reset_index(drop=True)
 
-    matches = build_matches(A, B, top_k=args.top_k, min_score=args.min_score, limit=args.limit)
+    client = model = None
+    if args.use_llm:
+        client, model = load_openai_client(args.creds_path)
+
+    matches = build_matches(
+        A,
+        B,
+        top_k=args.top_k,
+        min_score=args.min_score,
+        limit=args.limit,
+        client=client,
+        model=model,
+        llm_min_score=args.llm_min_score,
+        llm_max_score=args.llm_max_score,
+        llm_candidates=args.llm_candidates,
+    )
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     if matches.empty:
         matches = pd.DataFrame(columns=["item_id_A", "item_id_B"])
