@@ -11,4 +11,4 @@ openai_creds.yaml
 data/*.csv
 outputs/*.csv
 outputs/*.jsonl
-
+outputs/*.json
