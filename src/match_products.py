@@ -3,10 +3,10 @@ import json
 import os
 import time
 
+import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.neighbors import NearestNeighbors
+from sklearn.feature_extraction.text import CountVectorizer
 from tqdm import tqdm
 
 from llm_judge import judge_candidates, load_openai_client
@@ -111,21 +111,55 @@ def score_pair(a, b, semantic_score):
 
 
 def generate_candidates(A, B, top_k):
-    vectorizer = TfidfVectorizer(
+    vectorizer = CountVectorizer(
         analyzer="word",
         ngram_range=(1, 2),
         min_df=2,
         max_features=120_000,
         stop_words="english",
     )
-    matrix = vectorizer.fit_transform(pd.concat([A["search_text"], B["search_text"]]))
-    a_matrix = matrix[: len(A)]
-    b_matrix = matrix[len(A) :]
+    b_counts = vectorizer.fit_transform(B["search_text"])
+    a_counts = vectorizer.transform(A["search_text"])
 
-    nn = NearestNeighbors(n_neighbors=top_k, metric="cosine", algorithm="brute")
-    nn.fit(b_matrix)
-    distances, indices = nn.kneighbors(a_matrix)
-    return distances, indices
+    k1 = 1.5
+    b = 0.75
+    doc_lengths = np.asarray(b_counts.sum(axis=1)).ravel()
+    avg_doc_length = doc_lengths.mean() if len(doc_lengths) else 1.0
+    doc_freq = np.asarray((b_counts > 0).sum(axis=0)).ravel()
+    idf = np.log((len(B) - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0)
+
+    bm25 = b_counts.tocoo(copy=True)
+    length_norm = k1 * (1.0 - b + b * doc_lengths[bm25.row] / avg_doc_length)
+    bm25.data = idf[bm25.col] * (bm25.data * (k1 + 1.0)) / (bm25.data + length_norm)
+    bm25 = bm25.tocsr()
+
+    a_binary = a_counts.copy()
+    a_binary.data = np.ones_like(a_binary.data)
+    scores = a_binary @ bm25.T
+
+    all_indices = []
+    all_distances = []
+    for row_idx in range(scores.shape[0]):
+        row = scores.getrow(row_idx)
+        if row.nnz:
+            order = np.argsort(row.data)[::-1][:top_k]
+            indices = row.indices[order]
+            row_scores = row.data[order]
+            max_score = row_scores[0] if row_scores[0] > 0 else 1.0
+            semantic_scores = row_scores / max_score
+        else:
+            indices = np.array([], dtype=int)
+            semantic_scores = np.array([], dtype=float)
+
+        if len(indices) < top_k:
+            pad_count = top_k - len(indices)
+            indices = np.concatenate([indices, np.zeros(pad_count, dtype=int)])
+            semantic_scores = np.concatenate([semantic_scores, np.zeros(pad_count)])
+
+        all_indices.append(indices[:top_k])
+        all_distances.append(1.0 - semantic_scores[:top_k])
+
+    return np.vstack(all_distances), np.vstack(all_indices)
 
 
 def build_matches(
