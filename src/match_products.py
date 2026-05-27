@@ -133,31 +133,33 @@ def generate_candidates(A, B, top_k):
     bm25.data = idf[bm25.col] * (bm25.data * (k1 + 1.0)) / (bm25.data + length_norm)
     bm25 = bm25.tocsr()
 
-    a_binary = a_counts.copy()
-    a_binary.data = np.ones_like(a_binary.data)
-    scores = a_binary @ bm25.T
-
     all_indices = []
     all_distances = []
-    for row_idx in range(scores.shape[0]):
-        row = scores.getrow(row_idx)
-        if row.nnz:
-            order = np.argsort(row.data)[::-1][:top_k]
-            indices = row.indices[order]
-            row_scores = row.data[order]
-            max_score = row_scores[0] if row_scores[0] > 0 else 1.0
-            semantic_scores = row_scores / max_score
-        else:
-            indices = np.array([], dtype=int)
-            semantic_scores = np.array([], dtype=float)
+    batch_size = 512
+    for start in tqdm(range(0, a_counts.shape[0], batch_size), desc="BM25 retrieval"):
+        a_batch = a_counts[start : start + batch_size].copy()
+        a_batch.data = np.ones_like(a_batch.data)
+        score_batch = a_batch @ bm25.T
 
-        if len(indices) < top_k:
-            pad_count = top_k - len(indices)
-            indices = np.concatenate([indices, np.zeros(pad_count, dtype=int)])
-            semantic_scores = np.concatenate([semantic_scores, np.zeros(pad_count)])
+        for local_idx in range(score_batch.shape[0]):
+            row = score_batch.getrow(local_idx)
+            if row.nnz:
+                order = np.argsort(row.data)[::-1][:top_k]
+                indices = row.indices[order]
+                row_scores = row.data[order]
+                max_score = row_scores[0] if row_scores[0] > 0 else 1.0
+                semantic_scores = row_scores / max_score
+            else:
+                indices = np.array([], dtype=int)
+                semantic_scores = np.array([], dtype=float)
 
-        all_indices.append(indices[:top_k])
-        all_distances.append(1.0 - semantic_scores[:top_k])
+            if len(indices) < top_k:
+                pad_count = top_k - len(indices)
+                indices = np.concatenate([indices, np.zeros(pad_count, dtype=int)])
+                semantic_scores = np.concatenate([semantic_scores, np.zeros(pad_count)])
+
+            all_indices.append(indices[:top_k])
+            all_distances.append(1.0 - semantic_scores[:top_k])
 
     return np.vstack(all_distances), np.vstack(all_indices)
 
