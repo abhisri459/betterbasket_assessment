@@ -61,15 +61,50 @@ def organic_penalty(a, b):
     return 0.10 if bool(a["is_organic_norm"]) != bool(b["is_organic_norm"]) else 0.0
 
 
+def exact_field_score(a, b, field):
+    value_a = a.get(field, "")
+    value_b = b.get(field, "")
+    if not value_a or not value_b:
+        return 0.0
+    return 1.0 if value_a == value_b else 0.0
+
+
+def category_hierarchy_score(a, b):
+    weighted_levels = [
+        ("category_0_norm", 0.40),
+        ("category_1_norm", 0.30),
+        ("category_2_norm", 0.20),
+        ("category_3_norm", 0.10),
+    ]
+    score = 0.0
+    seen_weight = 0.0
+    for field, weight in weighted_levels:
+        value_a = a.get(field, "")
+        value_b = b.get(field, "")
+        if value_a and value_b:
+            seen_weight += weight
+            if value_a == value_b:
+                score += weight
+    return score / seen_weight if seen_weight else 0.0
+
+
+def item_info_score(a, b):
+    category_score = category_hierarchy_score(a, b)
+    storage_score = exact_field_score(a, b, "storage_type_norm")
+    packaging_score = exact_field_score(a, b, "packaging_description_norm")
+    return 0.65 * category_score + 0.20 * storage_score + 0.15 * packaging_score
+
+
 def score_pair(a, b, semantic_score):
     name_score = fuzz.token_set_ratio(a["name_norm"], b["name_norm"]) / 100
     category_score = fuzz.token_set_ratio(a["category_norm"], b["category_norm"]) / 100
     score = (
-        0.40 * name_score
-        + 0.25 * semantic_score
+        0.36 * name_score
+        + 0.22 * semantic_score
         + 0.15 * brand_score(a, b)
         + 0.12 * size_score(a, b)
-        + 0.08 * category_score
+        + 0.07 * category_score
+        + 0.08 * item_info_score(a, b)
         - organic_penalty(a, b)
     )
     return max(0.0, min(1.0, score))

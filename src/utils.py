@@ -96,6 +96,11 @@ def category_text(row):
     return normalize_text(" ".join(str(v) for v in values if v))
 
 
+def item_info_value(row, key):
+    item_info = parse_mapping(row.get("item_info", ""))
+    return normalize_text(item_info.get(key, ""))
+
+
 def friendly_size(row):
     item_info = parse_mapping(row.get("sizing_comp", ""))
     if item_info.get("size_user_friendly"):
@@ -137,6 +142,15 @@ def prepare_products(df, store):
     )
     df["brand_norm"] = df["brand_raw"].apply(normalize_text)
     df["category_norm"] = df.apply(category_text, axis=1)
+    df["category_0_norm"] = df.apply(lambda row: item_info_value(row, "category_0"), axis=1)
+    df["category_1_norm"] = df.apply(lambda row: item_info_value(row, "category_1"), axis=1)
+    df["category_2_norm"] = df.apply(lambda row: item_info_value(row, "category_2"), axis=1)
+    df["category_3_norm"] = df.apply(lambda row: item_info_value(row, "category_3"), axis=1)
+    df["storage_type_norm"] = df.apply(lambda row: item_info_value(row, "storage_type"), axis=1)
+    df["packaging_description_norm"] = df.apply(
+        lambda row: item_info_value(row, "packaging_description"),
+        axis=1,
+    )
     df["is_private_label_norm"] = df.get("is_private_label", False).apply(normalize_bool)
     df["is_organic_norm"] = df.get("is_organic", False).apply(normalize_bool)
 
@@ -154,6 +168,8 @@ def prepare_products(df, store):
                 row["name_norm"],
                 row["brand_norm"],
                 row["category_norm"],
+                row["storage_type_norm"],
+                row["packaging_description_norm"],
                 normalize_text(row["tags"]),
                 normalize_text(row["size_text"]),
             ]
@@ -171,6 +187,8 @@ def row_to_product(row):
         "brand": row.get("brand_raw", ""),
         "size": row.get("size_text", ""),
         "category": row.get("category_norm", ""),
+        "storage_type": row.get("storage_type_norm", ""),
+        "packaging": row.get("packaging_description_norm", ""),
         "is_private_label": bool(row.get("is_private_label_norm", False)),
         "is_organic": bool(row.get("is_organic_norm", False)),
     }
