@@ -5,8 +5,8 @@ import time
 
 import pandas as pd
 from rapidfuzz import fuzz
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
+from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 from llm_judge import judge_candidates, load_openai_client
@@ -111,20 +111,22 @@ def score_pair(a, b, semantic_score):
 
 
 def generate_candidates(A, B, top_k):
-    vectorizer = TfidfVectorizer(
-        analyzer="word",
-        ngram_range=(1, 2),
-        min_df=2,
-        max_features=120_000,
-        stop_words="english",
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    b_embeddings = model.encode(
+        B["search_text"].tolist(),
+        batch_size=128,
+        normalize_embeddings=True,
+        show_progress_bar=True,
     )
-    matrix = vectorizer.fit_transform(pd.concat([A["search_text"], B["search_text"]]))
-    a_matrix = matrix[: len(A)]
-    b_matrix = matrix[len(A) :]
-
+    a_embeddings = model.encode(
+        A["search_text"].tolist(),
+        batch_size=128,
+        normalize_embeddings=True,
+        show_progress_bar=True,
+    )
     nn = NearestNeighbors(n_neighbors=top_k, metric="cosine", algorithm="brute")
-    nn.fit(b_matrix)
-    distances, indices = nn.kneighbors(a_matrix)
+    nn.fit(b_embeddings)
+    distances, indices = nn.kneighbors(a_embeddings)
     return distances, indices
 
 
